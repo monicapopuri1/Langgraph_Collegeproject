@@ -18,6 +18,9 @@ batchLookupBtn.addEventListener("click", async () => {
         return;
     }
 
+    console.log("[BatchLookup] Raw textarea text:", text);
+    console.log("[BatchLookup] Parsed colleges array:", colleges);
+
     batchLookupBtn.disabled = true;
     batchLookupBtn.textContent = "Looking up...";
     batchLoading.classList.remove("hidden");
@@ -30,6 +33,7 @@ batchLookupBtn.addEventListener("click", async () => {
             body: JSON.stringify({ colleges }),
         });
         const data = await resp.json();
+        console.log("[BatchLookup] API response:", data);
 
         if (!resp.ok) {
             throw new Error(data.error || "Batch lookup failed");

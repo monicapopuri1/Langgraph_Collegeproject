@@ -1,10 +1,4 @@
-function gradeColor(grade) {
-  if (grade === 'A') return 'bg-green-100 text-green-800 border-green-300'
-  if (grade === 'B') return 'bg-lime-100 text-lime-800 border-lime-300'
-  if (grade === 'C') return 'bg-yellow-100 text-yellow-800 border-yellow-300'
-  if (grade === 'D') return 'bg-orange-100 text-orange-800 border-orange-300'
-  return 'bg-red-100 text-red-800 border-red-300'
-}
+import gradeColor from '../utils/gradeColor'
 
 export default function GradingResult({ result }) {
   return (

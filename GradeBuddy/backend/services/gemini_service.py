@@ -1,15 +1,17 @@
+import base64
 import json
-import google.generativeai as genai
-from config import GEMINI_API_KEY
+import mimetypes
+import anthropic
+from config import ANTHROPIC_API_KEY
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 def grade_answer_sheet(image_path, subject, answer_key, total_marks):
-    """Send answer sheet image to Gemini for OCR + grading."""
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
-    uploaded_file = genai.upload_file(image_path)
+    """Send answer sheet image to Claude for OCR + grading."""
+    mime_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    with open(image_path, "rb") as f:
+        image_data = base64.standard_b64encode(f.read()).decode("utf-8")
 
     prompt = f"""You are an expert teacher grading a student's answer sheet.
 
@@ -53,9 +55,31 @@ Return your response as valid JSON with exactly this structure (no markdown, no 
 Grade fairly but thoroughly. Provide specific, helpful feedback for each question.
 Return ONLY the JSON object, no other text."""
 
-    response = model.generate_content([prompt, uploaded_file])
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=4096,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": image_data,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+    )
 
-    text = response.text.strip()
+    text = response.content[0].text.strip()
     # Strip markdown code fences if present
     if text.startswith("```"):
         text = text.split("\n", 1)[1]

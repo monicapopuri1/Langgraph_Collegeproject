@@ -30,6 +30,16 @@ export default function Header() {
           >
             Grade
           </Link>
+          <Link
+            to="/dashboard"
+            className={`text-sm font-medium ${
+              location.pathname.startsWith('/dashboard')
+                ? 'text-indigo-600'
+                : 'text-gray-600 hover:text-indigo-600'
+            }`}
+          >
+            Dashboard
+          </Link>
         </nav>
       </div>
     </header>

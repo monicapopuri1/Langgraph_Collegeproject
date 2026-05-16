@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import axios from 'axios'
+import { saveResult } from '../utils/storage'
 import UploadForm from '../components/UploadForm'
 import AnswerKeyForm from '../components/AnswerKeyForm'
 import GradingResult from '../components/GradingResult'
@@ -38,6 +39,7 @@ export default function Grade() {
     try {
       const res = await axios.post('/api/grade', formData)
       setResult(res.data)
+      saveResult(subject || 'General', res.data)
     } catch (err) {
       const msg =
         err.response?.data?.error || 'Something went wrong. Please try again.'

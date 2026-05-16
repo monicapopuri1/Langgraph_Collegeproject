@@ -138,6 +138,7 @@ def api_crawl_courses():
 def api_batch_college_info():
     data = request.get_json()
     colleges = data.get("colleges", [])
+    logger.info(f"[batch] Received {len(colleges)} college entries: {colleges}")
     if not colleges:
         return jsonify({"error": "No college names provided"}), 400
 
@@ -156,9 +157,12 @@ def api_batch_college_info():
         else:
             name = entry
 
+        logger.info(f"[batch] Parsed entry — name={name!r}, courses={course_list}")
+
         # Look up the college URL
         lookup = lookup_college_url(name)
         if not lookup.get("found"):
+            logger.info(f"[batch] Lookup failed for {name!r}: {lookup.get('error')}")
             results.append({
                 "name": name,
                 "found": False,
@@ -167,9 +171,12 @@ def api_batch_college_info():
             continue
 
         url = lookup["url"]
+        logger.info(f"[batch] Lookup found URL for {name!r}: {url}")
         try:
             crawl_result = crawl_site(url, [])
+            logger.info(f"[batch] Crawl result for {name!r}: pages_crawled={crawl_result['pages_crawled']}, content_length={sum(len(p) for p in crawl_result['pages_content'])}")
             if not crawl_result["pages_content"]:
+                logger.info(f"[batch] No content extracted for {name!r}")
                 results.append({
                     "name": name,
                     "found": True,
@@ -194,17 +201,20 @@ def api_batch_college_info():
 
             # Verify courses if specified
             if course_list:
+                logger.info(f"[batch] Verifying courses for {name!r}: {course_list}")
                 courses, _ = verify_courses(crawl_result["pages_content"], course_list)
                 courses_status = []
                 for course in courses:
                     cd = course.to_dict()
                     exists = cd.get("match_status") in ("matched", "similar")
                     courses_status.append({"name": cd["name"], "exists": exists})
+                    logger.info(f"[batch]   course={cd['name']!r} match_status={cd.get('match_status')!r} exists={exists}")
                 result_entry["courses_status"] = courses_status
 
+            logger.info(f"[batch] Final result for {name!r}: {result_entry}")
             results.append(result_entry)
         except Exception as e:
-            logger.error(f"Error processing {name}: {e}")
+            logger.error(f"[batch] Error processing {name!r}: {e}", exc_info=True)
             results.append({
                 "name": name,
                 "found": True,
