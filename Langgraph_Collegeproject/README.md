@@ -174,8 +174,8 @@ Two tasks require genuine natural language understanding:
 
 ```bash
 # Clone the repo
-git clone https://github.com/monicapopuri1/Langgraph_Collegeproject.git
-cd Langgraph_Collegeproject
+git clone https://github.com/monicapopuri1/DeepScraper.git
+cd DeepScraper
 
 # Create and activate virtual environment
 python -m venv venv

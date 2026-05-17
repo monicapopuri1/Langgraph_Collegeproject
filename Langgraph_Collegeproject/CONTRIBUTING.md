@@ -8,7 +8,7 @@ Thank you for helping improve this tool for students and parents across India!
 
 ### 1. Report a Wrong Result
 If the tool gives an incorrect answer for a college + course combination:
-1. Open an [Issue](https://github.com/monicapopuri1/Langgraph_Collegeproject/issues)
+1. Open an [Issue](https://github.com/monicapopuri1/DeepScraper/issues)
 2. Include the college URL, course name, what the tool returned, and what the correct answer is
 3. A link to the page on the college website that confirms the correct answer is very helpful
 
@@ -37,8 +37,8 @@ Indian degrees have many abbreviations and alternate spellings. If the tool miss
 ## Development Setup
 
 ```bash
-git clone https://github.com/monicapopuri1/Langgraph_Collegeproject.git
-cd Langgraph_Collegeproject
+git clone https://github.com/monicapopuri1/DeepScraper.git
+cd DeepScraper
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
