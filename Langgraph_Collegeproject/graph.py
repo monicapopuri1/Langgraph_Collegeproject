@@ -11,6 +11,7 @@ import anthropic
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 
+from configs import load_config
 from scraper import fetch_page_text, fetch_page_and_links
 
 load_dotenv()
@@ -18,6 +19,7 @@ load_dotenv()
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 _claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_domain_config = load_config()
 
 # Lock for thread-safe writes to results.json when running in parallel
 _results_file_lock = threading.Lock()
@@ -75,13 +77,10 @@ def _extract_json_array(text: str):
     return None
 
 
-def resolve_course_synonyms(course: str) -> dict:
+def resolve_term_synonyms(term: str) -> dict:
     """
-    Two-step resolution:
-      1. Ask the LLM to list ALL distinct Indian degree meanings for the abbreviation.
-      2. If more than one distinct degree is returned, flag as ambiguous (decided
-         programmatically — not left to the model's own judgement).
-      3. For each unique meaning, ask the LLM for its Indian synonyms.
+    Expand a search term into synonyms and detect ambiguity.
+    Only runs when config["use_synonyms"] is True.
 
     Returns:
         {
@@ -91,18 +90,21 @@ def resolve_course_synonyms(course: str) -> dict:
           "interpretations": [{"name": str, "short": str}, ...]
         }
     """
-    # ── Step 1: enumerate all possible Indian degree meanings ────────────────
+    if not _domain_config.get("use_synonyms"):
+        return {"full_name": term, "synonyms": [term], "ambiguous": False, "interpretations": []}
+
+    context = _domain_config.get("synonyms_context", "")
+
+    # Step 1: enumerate all possible meanings for this term
     meanings_prompt = (
-        f"You are a database of Indian university degrees (UGC/AICTE/NMC/INC/BCI regulated).\n\n"
-        f"List EVERY distinct degree or course in India that uses the abbreviation or name: \"{course}\"\n\n"
+        f"You are a database of {context}.\n\n"
+        f"List EVERY distinct meaning or variant that uses the abbreviation or name: \"{term}\"\n\n"
         f"Rules:\n"
-        f"- Only list courses that actually exist and are taught in Indian colleges/universities.\n"
-        f"- Do NOT include US/UK/Australian courses.\n"
-        f"- Spelling variants of the SAME degree count as ONE entry.\n"
-        f"- Output a JSON array of objects. Each object: {{\"name\": \"<full degree name>\", \"short\": \"<common abbrev>\"}}\n"
-        f"- If only one degree uses this abbreviation, still output an array with one item.\n"
+        f"- Only list entries that actually exist in this domain.\n"
+        f"- Spelling variants of the SAME entry count as ONE item.\n"
+        f"- Output a JSON array of objects: {{\"name\": \"<full name>\", \"short\": \"<abbreviation>\"}}\n"
         f"- Output ONLY the JSON array. No prose, no markdown.\n\n"
-        f"Abbreviation: \"{course}\""
+        f"Term: \"{term}\""
     )
 
     meanings = []
@@ -112,48 +114,46 @@ def resolve_course_synonyms(course: str) -> dict:
         parsed = _extract_json_array(raw)
         if parsed is not None:
             meanings = parsed
-            log.info("  [resolve] '%s' → %d meaning(s): %s", course, len(meanings),
+            log.info("  [resolve] '%s' → %d meaning(s): %s", term, len(meanings),
                      [m.get("name", "") for m in meanings])
     except Exception as e:
-        log.error("  [resolve] meanings step failed for '%s': %s", course, e)
+        log.error("  [resolve] meanings step failed for '%s': %s", term, e)
 
-    # ── Step 2: decide ambiguity programmatically ────────────────────────────
+    # Step 2: flag as ambiguous if more than one distinct meaning found
     if len(meanings) > 1:
         return {
             "full_name": "",
             "synonyms": [],
             "ambiguous": True,
             "interpretations": [
-                {"name": m.get("name", ""), "short": m.get("short", course)}
+                {"name": m.get("name", ""), "short": m.get("short", term)}
                 for m in meanings
             ],
         }
 
-    # ── Step 3: single meaning — get all Indian synonyms ────────────────────
-    full_name = meanings[0].get("name", course) if meanings else course
+    # Step 3: single meaning — get all synonyms/variants
+    full_name = meanings[0].get("name", term) if meanings else term
 
     syns_prompt = (
-        f"You are an expert on Indian higher education.\n\n"
-        f"List ALL synonyms, abbreviations, and alternate spellings used in India for:\n"
+        f"You are an expert on {context}.\n\n"
+        f"List ALL synonyms, abbreviations, and alternate spellings for:\n"
         f"\"{full_name}\"\n\n"
         f"Rules:\n"
-        f"- Only include variants actually used in Indian universities/colleges.\n"
-        f"- Include: with/without dots (B.Sc vs BSc), with/without 'in'/'of', bracket variants, etc.\n"
-        f"- Always include the original input \"{course}\" in the list.\n"
-        f"- Output a JSON array of strings only. No prose, no markdown.\n\n"
-        f"Example output: [\"B.Sc Nursing\", \"BSc Nursing\", \"B.Sc. in Nursing\", \"BSN\"]"
+        f"- Only include variants actually used in this domain.\n"
+        f"- Always include the original input \"{term}\" in the list.\n"
+        f"- Output a JSON array of strings only. No prose, no markdown."
     )
 
-    synonyms = [course]
+    synonyms = [term]
     try:
         raw = _ask_llm(syns_prompt)
         raw = re.sub(r"```[a-z]*", "", raw).replace("```", "").strip()
         parsed = _extract_json_array(raw)
         if parsed is not None:
-            synonyms = list(dict.fromkeys([course] + [s for s in parsed if isinstance(s, str)]))
+            synonyms = list(dict.fromkeys([term] + [s for s in parsed if isinstance(s, str)]))
             log.info("  [resolve] synonyms for '%s': %s", full_name, synonyms[:6])
     except Exception as e:
-        log.error("  [resolve] synonyms step failed for '%s': %s", course, e)
+        log.error("  [resolve] synonyms step failed for '%s': %s", term, e)
 
     return {
         "full_name": full_name,
@@ -161,6 +161,10 @@ def resolve_course_synonyms(course: str) -> dict:
         "ambiguous": False,
         "interpretations": [],
     }
+
+
+# Keep old name as alias so existing callers don't break during transition
+resolve_course_synonyms = resolve_term_synonyms
 
 
 RESULTS_FILE = "results.json"
@@ -171,25 +175,29 @@ PROGRESS_FILE = "progress.json"
 # State schema
 # ---------------------------------------------------------------------------
 
-class CollegeState(TypedDict):
-    entries: list[dict]           # [{url, courses, course_synonyms, correction_hint}] full input
+class SearchState(TypedDict):
+    entries: list[dict]           # [{url, search_terms, term_synonyms, correction_hint}]
     current_index: int            # which entry we're on
     results: list[dict]           # accumulated results
     current_url: str
-    current_courses: list[str]
-    course_synonyms: dict         # {course_name: [synonym, ...]} resolved before crawl
+    search_terms: list[str]       # what we're looking for (courses, treatments, job roles, …)
+    term_synonyms: dict           # {term: [synonym, ...]} resolved before crawl
     correction_hint: str          # user's feedback when retrying a wrong result
     learned_patterns: list        # past errors learned for this domain
     html_content: str             # combined text from homepage + subpages
-    subpage_links: list[str]      # course-related links found on homepage
+    subpage_links: list[str]      # attribute-related links found on homepage
     contact_links: list[str]      # contact-page links found on homepage
-    course_found: bool
+    match_found: bool             # whether the attribute was found on the site
     playwright_evidence: str
     playwright_source_url: str
     contact: str
     email: str
     address: str
     error: str
+
+
+# Alias for backward compatibility
+CollegeState = SearchState
 
 
 # ---------------------------------------------------------------------------
@@ -215,41 +223,42 @@ def _save_json(path: str, data):
 # Nodes
 # ---------------------------------------------------------------------------
 
-def fetch_page(state: CollegeState) -> dict:
+def fetch_page(state: SearchState) -> dict:
     idx = state["current_index"]
     entry = state["entries"][idx]
     url = entry["url"]
-    courses = entry.get("courses", [])
-
-    course_synonyms    = entry.get("course_synonyms", {})
-    correction_hint    = entry.get("correction_hint", "")
-    learned_patterns   = entry.get("learned_patterns", [])
+    search_terms    = entry.get("search_terms", [])
+    term_synonyms   = entry.get("term_synonyms", {})
+    correction_hint = entry.get("correction_hint", "")
+    learned_patterns = entry.get("learned_patterns", [])
 
     log.info("━" * 60)
     log.info("[%d/%d] NODE: fetch_page → %s", idx + 1, len(state["entries"]), url)
-    log.info("  courses to check: %s", courses)
-    if course_synonyms:
-        log.info("  synonyms: %s", {k: v[:3] for k, v in course_synonyms.items()})
+    log.info("  search_terms: %s", search_terms)
+    if term_synonyms:
+        log.info("  synonyms: %s", {k: v[:3] for k, v in term_synonyms.items()})
     if correction_hint:
         log.info("  correction_hint: %s", correction_hint[:120])
     if learned_patterns:
         log.info("  learned_patterns: %d pattern(s) for this domain", len(learned_patterns))
 
-    # Build expanded search terms for link discovery (original names + synonyms)
-    all_search_terms = list(courses)
-    for syns in course_synonyms.values():
+    # Expand with synonyms for better link discovery
+    all_search_terms = list(search_terms)
+    for syns in term_synonyms.values():
         all_search_terms.extend(syns)
 
     t0 = time.time()
-    text, course_links, contact_links, error = fetch_page_and_links(url, courses=all_search_terms)
+    text, attribute_links, contact_links, error = fetch_page_and_links(
+        url, search_terms=all_search_terms, config=_domain_config
+    )
     log.info("  fetch completed in %.1fs", time.time() - t0)
 
     if error:
         log.warning("  fetch FAILED: %s", error)
         return {
             "current_url": url,
-            "current_courses": courses,
-            "course_synonyms": course_synonyms,
+            "search_terms": search_terms,
+            "term_synonyms": term_synonyms,
             "correction_hint": correction_hint,
             "learned_patterns": learned_patterns,
             "html_content": "",
@@ -259,17 +268,17 @@ def fetch_page(state: CollegeState) -> dict:
         }
 
     log.info("  homepage text: %d chars", len(text))
-    log.info("  course sub-pages found: %s", course_links)
-    log.info("  contact pages found:    %s", contact_links)
+    log.info("  attribute sub-pages found: %s", attribute_links)
+    log.info("  contact pages found:       %s", contact_links)
 
     return {
         "current_url": url,
-        "current_courses": courses,
-        "course_synonyms": course_synonyms,
+        "search_terms": search_terms,
+        "term_synonyms": term_synonyms,
         "correction_hint": correction_hint,
         "learned_patterns": learned_patterns,
         "html_content": text,
-        "subpage_links": course_links,
+        "subpage_links": attribute_links,
         "contact_links": contact_links,
         "error": "",
     }
@@ -326,34 +335,34 @@ def crawl_subpages(state: CollegeState) -> dict:
     return {"html_content": combined}
 
 
-def check_courses(state: CollegeState) -> dict:
-    log.info("NODE: check_courses")
+def check_match(state: SearchState) -> dict:
+    log.info("NODE: check_match")
     if state.get("error"):
         log.warning("  skipping — error in state: %s", state["error"])
-        return {"course_found": False}
+        return {"match_found": False}
 
-    courses             = state["current_courses"]
-    course_synonyms_map = state.get("course_synonyms", {})
-    correction_hint     = state.get("correction_hint", "")
-    learned_patterns    = state.get("learned_patterns", [])
-    html                = state["html_content"]
+    search_terms     = state["search_terms"]
+    term_synonyms    = state.get("term_synonyms", {})
+    correction_hint  = state.get("correction_hint", "")
+    learned_patterns = state.get("learned_patterns", [])
+    html             = state["html_content"]
 
-    if not courses:
-        log.info("  no courses to check")
-        return {"course_found": False}
+    if not search_terms:
+        log.info("  no search terms to check")
+        return {"match_found": False}
 
-    # Build a description of each course that includes all its known synonyms
-    course_lines = []
-    for course in courses:
-        syns = course_synonyms_map.get(course, [])
-        unique_syns = [s for s in syns if s.lower() != course.lower()][:8]
+    # Build attribute block including synonyms
+    attribute_lines = []
+    for term in search_terms:
+        syns = term_synonyms.get(term, [])
+        unique_syns = [s for s in syns if s.lower() != term.lower()][:8]
         if unique_syns:
-            course_lines.append(f"  - {course}  (also known as: {', '.join(unique_syns)})")
+            attribute_lines.append(f"  - {term}  (also known as: {', '.join(unique_syns)})")
         else:
-            course_lines.append(f"  - {course}")
-    courses_block = "\n".join(course_lines)
+            attribute_lines.append(f"  - {term}")
+    attributes_block = "\n".join(attribute_lines)
 
-    # Build optional correction / learning context block
+    # Build optional correction / learning context
     extra_context = ""
     if correction_hint:
         extra_context += (
@@ -371,38 +380,25 @@ def check_courses(state: CollegeState) -> dict:
             f"{pattern_lines}\n"
         )
 
-    prompt = (
-        f"You are checking whether a college OFFERS specific courses for enrollment.\n"
-        f"Use ONLY the text provided below. Do NOT use any prior knowledge.\n"
-        f"{extra_context}\n"
-        f"RULES FOR SAYING YES:\n"
-        f"A course is offered only if the text shows the course name OR any of its listed synonyms\n"
-        f"AND at least one of these supporting details for that course:\n"
-        f"  - fees or fee structure\n"
-        f"  - duration or number of years/semesters\n"
-        f"  - eligibility or admission criteria\n"
-        f"  - curriculum, syllabus, or subjects taught\n"
-        f"  - a dedicated department or school that runs it\n"
-        f"  - skills or career outcomes it leads to\n\n"
-        f"RULES FOR SAYING NO:\n"
-        f"  - The course name appears only in passing (e.g. a faculty bio, a research mention,\n"
-        f"    a comparison to another institution, or a generic list with no supporting detail)\n"
-        f"  - You are not sure — when in doubt, say Not Sure\n\n"
-        f"Courses to verify (check for the course name OR any of its synonyms):\n{courses_block}\n\n"
-        f"Website text:\n{html}\n\n"
-        f"Start your answer with 'Yes' if any course is confirmed offered, else 'No'.\n"
-        f"Then briefly state which course(s) and what evidence you found.\n"
-        f"Example: Yes — B.Sc Psychology: dedicated department page with 3-year duration and eligibility criteria listed."
+    prompt = _domain_config["verify_prompt"].format(
+        extra_context=extra_context,
+        attributes_block=attributes_block,
+        html=html,
     )
+
     try:
         answer = _ask_llm(prompt)
         found = answer.lower().startswith("yes")
-        log.info("  LLM answer: %s", answer[:300])   # full answer so you can audit the reasoning
-        log.info("  course_found = %s", found)
-        return {"course_found": found}
+        log.info("  LLM answer: %s", answer[:300])
+        log.info("  match_found = %s", found)
+        return {"match_found": found}
     except Exception as e:
         log.error("  LLM call failed: %s", e)
-        return {"course_found": False, "error": f"LLM error in check_courses: {str(e)}"}
+        return {"match_found": False, "error": f"LLM error in check_match: {str(e)}"}
+
+
+# Alias so existing references don't break
+check_courses = check_match
 
 
 def _parse_contact_json(raw: str) -> dict:
@@ -521,19 +517,18 @@ def log_failure(state: CollegeState) -> dict:
     return {}
 
 
-def save_result(state: CollegeState) -> dict:
+def save_result(state: SearchState) -> dict:
     log.info("NODE: save_result")
     results = list(state.get("results", []))
     idx = state["current_index"]
     entry = state["entries"][idx]
-    # Allow retry to overwrite an existing result at its original position
     record_index = entry.get("original_index", idx)
 
     record = {
         "index": record_index,
         "url": state.get("current_url", ""),
-        "courses_requested": state.get("current_courses", []),
-        "course_found": state.get("course_found", False),
+        "attributes_requested": state.get("search_terms", []),
+        "match_found": state.get("match_found", False),
         "playwright_evidence": state.get("playwright_evidence", ""),
         "playwright_source_url": state.get("playwright_source_url", ""),
         "contact": state.get("contact", ""),
@@ -543,8 +538,8 @@ def save_result(state: CollegeState) -> dict:
         "error": state.get("error", ""),
     }
 
-    log.info("  saved record: url=%s  course_found=%s  status=%s",
-             record["url"], record["course_found"], record["status"])
+    log.info("  saved record: url=%s  match_found=%s  status=%s",
+             record["url"], record["match_found"], record["status"])
 
     # Thread-safe write: read latest from disk, merge, write back
     with _results_file_lock:
@@ -561,14 +556,14 @@ def save_result(state: CollegeState) -> dict:
         "current_index": idx + 1,
         # Reset per-entry fields
         "current_url": "",
-        "current_courses": [],
-        "course_synonyms": {},
+        "search_terms": [],
+        "term_synonyms": {},
         "correction_hint": "",
         "learned_patterns": [],
         "html_content": "",
         "subpage_links": [],
         "contact_links": [],
-        "course_found": False,
+        "match_found": False,
         "playwright_evidence": "",
         "playwright_source_url": "",
         "contact": "",
@@ -605,11 +600,11 @@ def _playwright_contact_text(db, max_pages: int = 5) -> str:
     return combined
 
 
-def playwright_fallback(state: CollegeState) -> dict:
+def playwright_fallback(state: SearchState) -> dict:
     """
-    Deep-crawl fallback using Playwright when the fast HTTP pass didn't find the course.
+    Deep-crawl fallback using Playwright when the fast HTTP pass didn't find the attribute.
     Tries sitemap-only mode first (15-40 s), then BFS with a capped page limit.
-    Uses Claude (Anthropic) for LLM verification instead of local Ollama.
+    Uses Claude (Anthropic) for LLM verification.
     """
     log.info("NODE: playwright_fallback")
     if state.get("error"):
@@ -617,8 +612,8 @@ def playwright_fallback(state: CollegeState) -> dict:
         return {"playwright_evidence": "", "playwright_source_url": ""}
 
     url = state["current_url"]
-    courses = state["current_courses"]
-    if not courses:
+    search_terms = state["search_terms"]
+    if not search_terms:
         return {"playwright_evidence": "", "playwright_source_url": ""}
 
     try:
@@ -633,15 +628,15 @@ def playwright_fallback(state: CollegeState) -> dict:
     db_path = derive_db_path(url)
     allowed_domains = (derive_domain(url),)
 
-    course_synonyms_map = state.get("course_synonyms", {})
+    term_synonyms_map = state.get("term_synonyms", {})
 
     async def _run():
         db = CrawlerDB(db_path)
         try:
             found_result = None
-            for course in courses:
+            for course in search_terms:
                 # Prefer LLM-resolved synonyms; fall back to generate_variants
-                resolved_syns = course_synonyms_map.get(course, [])
+                resolved_syns = term_synonyms_map.get(course, [])
                 if resolved_syns:
                     # Merge resolved synonyms with punctuation variants of each synonym
                     variant_set = []
@@ -662,6 +657,8 @@ def playwright_fallback(state: CollegeState) -> dict:
                     max_pages=40,
                     max_depth=3,
                     searcher=searcher,
+                    priority_url_keywords=_domain_config.get("priority_url_keywords"),
+                    skip_url_patterns=_domain_config.get("skip_url_patterns"),
                 )
                 log.info("  [PW] crawling for course: %s", course)
                 early_result = await crawler.crawl_sitemap_only(url)
@@ -688,7 +685,7 @@ def playwright_fallback(state: CollegeState) -> dict:
         updated_html = state.get("html_content", "") + pw_contact_text
 
         return {
-            "course_found": found,
+            "match_found": found,
             "playwright_evidence": evidence,
             "playwright_source_url": source_url,
             "html_content": updated_html,
@@ -709,8 +706,8 @@ def route_after_fetch(state: CollegeState) -> str:
 
 
 def route_after_check_courses(state: CollegeState) -> str:
-    """Skip Playwright if course already found by the fast HTTP pass."""
-    if state.get("course_found") or state.get("error"):
+    """Skip Playwright if attribute already found by the fast HTTP pass."""
+    if state.get("match_found") or state.get("error"):
         return "extract_contact"
     return "playwright_fallback"
 
@@ -730,7 +727,7 @@ def build_graph():
 
     g.add_node("fetch_page", fetch_page)
     g.add_node("crawl_subpages", crawl_subpages)
-    g.add_node("check_courses", check_courses)
+    g.add_node("check_match", check_match)
     g.add_node("playwright_fallback", playwright_fallback)
     g.add_node("extract_contact", extract_contact)
     g.add_node("log_failure", log_failure)
@@ -742,8 +739,8 @@ def build_graph():
         "crawl_subpages": "crawl_subpages",
         "log_failure": "log_failure",
     })
-    g.add_edge("crawl_subpages", "check_courses")
-    g.add_conditional_edges("check_courses", route_after_check_courses, {
+    g.add_edge("crawl_subpages", "check_match")
+    g.add_conditional_edges("check_match", route_after_check_courses, {
         "extract_contact": "extract_contact",
         "playwright_fallback": "playwright_fallback",
     })
@@ -785,14 +782,14 @@ def run_graph(entries: list[dict], status_holder: dict):
         "current_index": start_index,
         "results": existing_results,
         "current_url": "",
-        "current_courses": [],
-        "course_synonyms": {},
+        "search_terms": [],
+        "term_synonyms": {},
         "correction_hint": "",
         "learned_patterns": [],
         "html_content": "",
         "subpage_links": [],
         "contact_links": [],
-        "course_found": False,
+        "match_found": False,
         "playwright_evidence": "",
         "playwright_source_url": "",
         "contact": "",

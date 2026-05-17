@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>College Info Checker</title>
+  <title>{{ config.entity_name }} Info Checker</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -246,18 +246,18 @@
 </head>
 <body>
 
-<h1>College Info Checker</h1>
-<p class="subtitle">Powered by LangGraph + GPT-4o &mdash; checks courses &amp; extracts contact info</p>
+<h1>{{ config.entity_name }} Info Checker</h1>
+<p class="subtitle">Powered by LangGraph + Claude &mdash; verifies {{ config.attribute_name|lower }}s &amp; extracts contact info</p>
 
 <!-- Input Card -->
 <div class="card">
-  <h2>Colleges to Check</h2>
+  <h2>{{ config.entity_name }}s to Check</h2>
   <table id="input-table">
     <thead>
       <tr>
         <th>#</th>
-        <th>College Website URL</th>
-        <th>Courses to Verify (comma-separated)</th>
+        <th>{{ config.entity_name }} Website URL</th>
+        <th>{{ config.attribute_name }}s to Verify (comma-separated)</th>
         <th></th>
       </tr>
     </thead>
@@ -275,9 +275,9 @@
 
 <!-- Disambiguation card — shown only when a course abbreviation is ambiguous -->
 <div id="disambig-card" class="card" style="display:none; border-left: 4px solid #d69e2e;">
-  <h2 style="color:#b7791f">&#x2753; Clarify Course Names</h2>
+  <h2 style="color:#b7791f">&#x2753; Clarify {{ config.attribute_name }} Names</h2>
   <p style="color:#744210; margin-bottom:1rem; font-size:0.9rem">
-    Some course names you entered could refer to multiple different courses in India.
+    Some {{ config.attribute_name|lower }} names you entered could refer to multiple entries.
     Please select the correct one for each:
   </p>
   <div id="disambig-body"></div>
@@ -297,13 +297,13 @@
 <div class="card">
   <h2>Results</h2>
   <div id="results-wrapper">
-    <div id="empty-results">No results yet. Add some colleges and click Start.</div>
+    <div id="empty-results">No results yet. Add some {{ config.entity_name|lower }}s and click Start.</div>
     <table id="results-table" style="display:none">
       <thead>
         <tr>
           <th>#</th>
-          <th>College URL</th>
-          <th>Courses Found</th>
+          <th>{{ config.entity_name }} URL</th>
+          <th>{{ config.attribute_name }}s Found</th>
           <th>Evidence</th>
           <th>Phone</th>
           <th>Email</th>
@@ -329,15 +329,15 @@
   // -----------------------------------------------------------------------
   let rowCount = 0;
 
-  function addRow(url = '', courses = '') {
+  function addRow(url = '', search_terms = '') {
     rowCount++;
     const tbody = document.getElementById('input-body');
     const tr = document.createElement('tr');
     tr.dataset.id = rowCount;
     tr.innerHTML = `
       <td>${rowCount}</td>
-      <td><input type="url" placeholder="https://college.edu" value="${url}" /></td>
-      <td><input type="text" placeholder="B.Tech, MBA, M.Sc" value="${courses}" /></td>
+      <td><input type="url" placeholder="{{ config.entity_placeholder }}" value="${url}" /></td>
+      <td><input type="text" placeholder="{{ config.attribute_placeholder }}" value="${search_terms}" /></td>
       <td><button class="btn-remove" title="Remove row">&#x2715;</button></td>
     `;
     tr.querySelector('.btn-remove').addEventListener('click', () => tr.remove());
@@ -359,21 +359,21 @@
     rows.forEach(row => {
       const inputs = row.querySelectorAll('input');
       const url = inputs[0].value.trim();
-      const courses = inputs[1].value.trim();
-      if (url) entries.push({ url, courses });
+      const search_terms = inputs[1].value.trim();
+      if (url) entries.push({ url, search_terms });
     });
     return entries;
   }
 
   // -----------------------------------------------------------------------
-  // Start — resolve courses first, then handle disambiguation or go straight
+  // Start — resolve attributes first, then handle disambiguation or go straight
   // -----------------------------------------------------------------------
   document.getElementById('btn-start').addEventListener('click', async () => {
     const entries = collectEntries();
-    if (!entries.length) { alert('Please add at least one college URL.'); return; }
+    if (!entries.length) { alert('Please add at least one URL.'); return; }
 
     setRunning(true);
-    setProgress('Resolving course names…');
+    setProgress('Resolving attribute names…');
 
     try {
       const res = await fetch('/api/resolve_courses', {
@@ -458,27 +458,26 @@
   });
 
   // -----------------------------------------------------------------------
-  // Build enriched entries (with course_synonyms) ready for /api/start
+  // Build enriched entries (with term_synonyms) ready for /api/start
   // -----------------------------------------------------------------------
   function buildEnrichedEntries(resolvedEntries, rawEntries, selections) {
     return resolvedEntries.map((rEntry, ei) => {
       const raw = rawEntries[ei] || {};
-      const courseSynonyms = {};
+      const termSynonyms = {};
 
       rEntry.resolutions.forEach((res, ri) => {
         let synonyms = [];
         if (res.ambiguous) {
           const selIdx = selections[`disambig-${ei}-${ri}`] ?? 0;
           const chosen = res.interpretations[selIdx];
-          // Use the chosen interpretation's name as the resolved course
           synonyms = [chosen.name, chosen.short].filter(Boolean);
         } else {
           synonyms = res.synonyms || [res.original];
         }
-        courseSynonyms[res.original] = synonyms;
+        termSynonyms[res.original] = synonyms;
       });
 
-      return { url: raw.url, courses: raw.courses, course_synonyms: courseSynonyms };
+      return { url: raw.url, search_terms: raw.search_terms, term_synonyms: termSynonyms };
     });
   }
 
@@ -610,7 +609,7 @@
 
       const foundHtml = r.status === 'failed'
         ? `<span class="found-no">—</span>`
-        : r.course_found
+        : r.match_found
           ? `<span class="found-yes">&#10003; Yes</span>`
           : `<span class="found-no">&#10007; No</span>`;
 
@@ -635,7 +634,7 @@
       tr.innerHTML = `
         <td>${i + 1}</td>
         <td><a class="url-link" href="${escHtml(r.url)}" target="_blank" rel="noopener">${escHtml(r.url)}</a></td>
-        <td>${foundHtml}${r.courses_requested && r.courses_requested.length ? '<br><small style="color:#718096">' + escHtml(r.courses_requested.join(', ')) + '</small>' : ''}</td>
+        <td>${foundHtml}${r.attributes_requested && r.attributes_requested.length ? '<br><small style="color:#718096">' + escHtml(r.attributes_requested.join(', ')) + '</small>' : ''}</td>
         <td style="max-width:260px">${evidenceHtml}</td>
         <td>${escHtml(r.contact || '—')}</td>
         <td>${r.email ? `<a href="mailto:${escHtml(r.email)}">${escHtml(r.email)}</a>` : '—'}</td>
@@ -655,7 +654,7 @@
           <td colspan="9" style="padding:0; border-bottom:2px solid #fefcbf">
             <div class="feedback-panel">
               <label>What is incorrect? (helps us improve &amp; retry smarter)</label>
-              <textarea id="fb-text-${idx}" rows="2" placeholder="e.g. The course IS offered — page says B.Tech AI on the admissions tab">${savedText}</textarea>
+              <textarea id="fb-text-${idx}" rows="2" placeholder="e.g. The result IS correct — page explicitly lists it with supporting details">${savedText}</textarea>
               <div class="panel-btns">
                 <button class="btn-fb btn-fb-retry" onclick="submitRetry(${idx})">&#x21BA; Retry with correction</button>
                 <button class="btn-fb btn-fb-wrong" onclick="submitFeedbackOnly(${idx})">Save feedback only</button>

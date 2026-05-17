@@ -281,6 +281,8 @@ class PlaywrightCrawler:
         max_depth: int = MAX_DEPTH,
         searcher=None,
         sitemap_only: bool = False,
+        priority_url_keywords=None,
+        skip_url_patterns=None,
     ):
         self.db = db
         self.allowed_domains = allowed_domains
@@ -290,6 +292,8 @@ class PlaywrightCrawler:
         self.searcher = searcher  # CourseSearcher instance for early-exit checks
         self.sitemap_only = sitemap_only
         self.visited: set[str] = set()
+        self.priority_url_keywords = priority_url_keywords or PRIORITY_KEYWORDS
+        self.skip_url_patterns = skip_url_patterns or SKIP_BULK
 
     # -------------------------------------------------------- sitemap-only crawl
 
@@ -345,12 +349,12 @@ class PlaywrightCrawler:
                     )
 
             def _relevant(u):
-                if SKIP_BULK.search(u):
+                if self.skip_url_patterns.search(u):
                     return False
                 if root_domain not in urlparse(u).netloc:
                     return False
                 return bool(
-                    PRIORITY_KEYWORDS.search(u)
+                    self.priority_url_keywords.search(u)
                     or (course_url_pattern and course_url_pattern.search(u))
                 )
 
@@ -428,7 +432,8 @@ class PlaywrightCrawler:
             def enqueue(url: str, depth: int):
                 if url not in self.visited and not self.db.url_exists(url):
                     self.visited.add(url)
-                    queue.append((priority_score(url), depth, url))
+                    score = 0 if self.priority_url_keywords.search(url) else 1
+                    queue.append((score, depth, url))
 
             # Seed queue — priority seeds first (highest priority)
             for seed in self.priority_seeds:
@@ -440,7 +445,7 @@ class PlaywrightCrawler:
             # (e.g. hundreds of /faculty/name-* pages that drown out course pages)
             programme_sitemap = [
                 u for u in sitemap_urls
-                if PRIORITY_KEYWORDS.search(u) and not SKIP_BULK.search(u)
+                if self.priority_url_keywords.search(u) and not self.skip_url_patterns.search(u)
             ]
             for u in programme_sitemap:
                 enqueue(u, 1)

@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, jsonify, render_template, request
 
+from configs import load_config
 from graph import (
     run_graph, resolve_course_synonyms,
     RESULTS_FILE, PROGRESS_FILE,
@@ -15,6 +16,7 @@ from cache import CacheDB
 app = Flask(__name__)
 
 _cache_db = CacheDB()
+_domain_config = load_config()
 
 # Shared status between Flask and the graph worker thread
 _status = {
@@ -32,7 +34,7 @@ _lock = threading.Lock()
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", config=_domain_config)
 
 
 @app.route("/api/resolve_courses", methods=["POST"])
@@ -49,22 +51,22 @@ def api_resolve_courses():
     needs_any_clarification = False
 
     for entry in entries:
-        courses_raw = entry.get("courses", "")
-        if isinstance(courses_raw, str):
-            course_list = [c.strip() for c in courses_raw.split(",") if c.strip()]
+        attrs_raw = entry.get("search_terms", "")
+        if isinstance(attrs_raw, str):
+            attr_list = [c.strip() for c in attrs_raw.split(",") if c.strip()]
         else:
-            course_list = list(courses_raw)
+            attr_list = list(attrs_raw)
 
         resolutions = []
-        for course in course_list:
-            res = resolve_course_synonyms(course)
-            resolutions.append({"original": course, **res})
+        for term in attr_list:
+            res = resolve_course_synonyms(term)
+            resolutions.append({"original": term, **res})
             if res.get("ambiguous"):
                 needs_any_clarification = True
 
         resolved_entries.append({
             "url": entry.get("url", ""),
-            "courses_raw": courses_raw,
+            "attrs_raw": attrs_raw,
             "resolutions": resolutions,
             "needs_clarification": any(r.get("ambiguous") for r in resolutions),
         })
@@ -88,11 +90,11 @@ def api_start():
     if not entries:
         return jsonify({"error": "No entries provided"}), 400
 
-    # Normalize courses field to list
+    # Normalize search_terms field to list
     for entry in entries:
-        courses = entry.get("courses", "")
-        if isinstance(courses, str):
-            entry["courses"] = [c.strip() for c in courses.split(",") if c.strip()]
+        terms = entry.get("search_terms", "")
+        if isinstance(terms, str):
+            entry["search_terms"] = [c.strip() for c in terms.split(",") if c.strip()]
 
     # Cache lookup — skip entries we already have confirmed results for
     existing_results = _load_json(RESULTS_FILE, [])
@@ -102,8 +104,8 @@ def api_start():
 
     for i, entry in enumerate(entries):
         url = entry.get("url", "")
-        courses = entry.get("courses", [])
-        cached = _cache_db.lookup(url, courses)
+        search_terms = entry.get("search_terms", [])
+        cached = _cache_db.lookup(url, search_terms)
         if cached:
             cached["index"] = i
             cached_records = [r for r in cached_records if r.get("index") != i]
@@ -220,11 +222,13 @@ def api_feedback():
         llm_analysis = ""
         if notes:
             try:
+                entity = _domain_config.get("entity_name", "entity")
+                attribute = _domain_config.get("attribute_name", "attribute")
                 analysis_prompt = (
-                    f"A college course verification system gave an incorrect result.\n"
+                    f"A {entity} {attribute} verification system gave an incorrect result.\n"
                     f"URL checked: {url}\n"
-                    f"Courses verified: {result.get('courses_requested', [])}\n"
-                    f"System result: {'Course Found' if result.get('course_found') else 'Course Not Found'}\n"
+                    f"{attribute}s verified: {result.get('attributes_requested', [])}\n"
+                    f"System result: '{attribute} Found' if {result.get('match_found')} else '{attribute} Not Found'\n"
                     f"User correction: {notes}\n\n"
                     f"In 1-2 sentences, what likely went wrong and what should the system "
                     f"look for next time to get the correct answer? Be specific and concise."
@@ -268,10 +272,10 @@ def api_retry():
         return jsonify({"error": "Result not found"}), 404
 
     url = result.get("url", "")
-    courses = result.get("courses_requested", [])
+    search_terms = result.get("attributes_requested", [])
 
     # Check the verified cache first — no need to crawl if we already know the answer
-    cached = _cache_db.lookup(url, courses)
+    cached = _cache_db.lookup(url, search_terms)
     if cached:
         cached["index"] = index
         results = [r for r in results if r.get("index") != index]
@@ -284,8 +288,8 @@ def api_retry():
 
     entry = {
         "url": url,
-        "courses": courses,
-        "course_synonyms": {},          # will be re-resolved if needed
+        "search_terms": search_terms,
+        "term_synonyms": {},            # will be re-resolved if needed
         "correction_hint": notes,
         "learned_patterns": learned,
         "original_index": index,        # overwrite the original row

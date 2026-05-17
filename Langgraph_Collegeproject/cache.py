@@ -25,8 +25,8 @@ class CacheDB:
             CREATE TABLE IF NOT EXISTS verified_results (
                 id                   INTEGER PRIMARY KEY AUTOINCREMENT,
                 url                  TEXT    NOT NULL,
-                courses_json         TEXT    NOT NULL,
-                course_found         INTEGER NOT NULL DEFAULT 0,
+                attributes_json      TEXT    NOT NULL,
+                match_found          INTEGER NOT NULL DEFAULT 0,
                 contact              TEXT    DEFAULT '',
                 email                TEXT    DEFAULT '',
                 address              TEXT    DEFAULT '',
@@ -54,16 +54,16 @@ class CacheDB:
 
     def save_result(self, result: dict, feedback: str, user_notes: str = ""):
         """Persist a user-confirmed result so it can be served from cache later."""
-        courses = sorted(result.get("courses_requested", []))
+        attributes = sorted(result.get("attributes_requested", []))
         self.conn.execute("""
             INSERT INTO verified_results
-              (url, courses_json, course_found, contact, email, address,
+              (url, attributes_json, match_found, contact, email, address,
                playwright_evidence, playwright_source_url, feedback, user_notes, verified_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             result.get("url", ""),
-            json.dumps(courses),
-            1 if result.get("course_found") else 0,
+            json.dumps(attributes),
+            1 if result.get("match_found") else 0,
             result.get("contact", ""),
             result.get("email", ""),
             result.get("address", ""),
@@ -75,21 +75,21 @@ class CacheDB:
         ))
         self.conn.commit()
 
-    def lookup(self, url: str, courses: list) -> dict | None:
-        """Return a cached result for this url + course list, or None."""
-        courses_json = json.dumps(sorted(courses))
+    def lookup(self, url: str, attributes: list) -> dict | None:
+        """Return a cached result for this url + attribute list, or None."""
+        attributes_json = json.dumps(sorted(attributes))
         row = self.conn.execute("""
-            SELECT url, courses_json, course_found, contact, email, address,
+            SELECT url, attributes_json, match_found, contact, email, address,
                    playwright_evidence, playwright_source_url, feedback, user_notes
             FROM verified_results
-            WHERE url = ? AND courses_json = ?
+            WHERE url = ? AND attributes_json = ?
             ORDER BY verified_at DESC LIMIT 1
-        """, (url, courses_json)).fetchone()
+        """, (url, attributes_json)).fetchone()
         if row:
             return {
                 "url": row[0],
-                "courses_requested": json.loads(row[1]),
-                "course_found": bool(row[2]),
+                "attributes_requested": json.loads(row[1]),
+                "match_found": bool(row[2]),
                 "contact": row[3],
                 "email": row[4],
                 "address": row[5],
